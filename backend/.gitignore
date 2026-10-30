@@ -1,0 +1,5 @@
+app.db
+previews/*.png
+__pycache__/
+.venv/
+.env
