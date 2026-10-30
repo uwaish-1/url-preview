@@ -26,16 +26,15 @@ from jose import jwt
 from playwright.sync_api import sync_playwright
 
 
-# =========================================================
+
 # APP SETUP
-# =========================================================
+
 
 app = FastAPI(title="Simple URL Preview App")
 
 
-# =========================================================
+
 # CORS
-# =========================================================
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,9 +45,9 @@ app.add_middleware(
 )
 
 
-# =========================================================
+
 # DIRECTORIES
-# =========================================================
+
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -56,9 +55,9 @@ PREVIEW_DIR = BASE_DIR / "previews"
 PREVIEW_DIR.mkdir(exist_ok=True)
 
 
-# =========================================================
+
 # DATABASE
-# =========================================================
+
 
 DATABASE_URL = f"sqlite:///{BASE_DIR / 'app.db'}"
 
@@ -339,55 +338,140 @@ app.mount(
 # =========================================================
 
 def take_screenshot(url: str):
-
     filename = f"{uuid.uuid4()}.png"
-
     file_path = PREVIEW_DIR / filename
 
     print("Opening URL:", url)
 
     with sync_playwright() as p:
 
+        # Use installed Google Chrome instead of Playwright Chromium
         browser = p.chromium.launch(
-            headless=True
+            headless=True,
+            channel="chrome",
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+            ],
         )
 
         try:
-
-            page = browser.new_page(
+            context = browser.new_context(
                 viewport={
                     "width": 1440,
                     "height": 900,
-                }
+                },
+                screen={
+                    "width": 1440,
+                    "height": 900,
+                },
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                ),
+                locale="en-US",
+                timezone_id="Asia/Kolkata",
+                color_scheme="light",
+                java_script_enabled=True,
+                ignore_https_errors=True,
             )
 
-            print("Loading page...")
+            page = context.new_page()
 
-            page.goto(
-                url,
-                wait_until="domcontentloaded",
-                timeout=30000,
-            )
+            # Make browser automation less obvious to websites
+            page.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+            """)
 
-            print("Page loaded.")
+            last_error = None
 
-            page.wait_for_timeout(2000)
+            # Try up to 3 times
+            for attempt in range(1, 4):
 
-            page.screenshot(
-                path=str(file_path),
-                full_page=True,
-            )
+                print(f"Navigation attempt {attempt}/3")
 
-            print(
-                "Screenshot saved:",
-                file_path
-            )
+                try:
+
+                    if attempt == 1:
+
+                        page.goto(
+                            url,
+                            wait_until="domcontentloaded",
+                            timeout=30000,
+                        )
+
+                    elif attempt == 2:
+
+                        page.goto(
+                            url,
+                            wait_until="commit",
+                            timeout=30000,
+                        )
+
+                        try:
+                            page.wait_for_load_state(
+                                "domcontentloaded",
+                                timeout=15000,
+                            )
+                        except Exception:
+                            print(
+                                "Page did not reach "
+                                "domcontentloaded. Continuing."
+                            )
+
+                    else:
+
+                        # Create a fresh page for the final attempt
+                        page.close()
+
+                        page = context.new_page()
+
+                        page.goto(
+                            url,
+                            wait_until="commit",
+                            timeout=45000,
+                        )
+
+                    print("Page navigation successful.")
+
+                    # Allow JavaScript/images to render
+                    page.wait_for_timeout(3000)
+
+                    # Capture screenshot
+                    page.screenshot(
+                        path=str(file_path),
+                        full_page=True,
+                    )
+
+                    print(
+                        "Screenshot saved:",
+                        file_path,
+                    )
+
+                    return filename
+
+                except Exception as e:
+
+                    last_error = e
+
+                    print(
+                        f"Navigation attempt {attempt} failed:"
+                    )
+                    print(repr(e))
+
+                    if attempt < 3:
+                        page.wait_for_timeout(2000)
+
+            # All attempts failed
+            raise last_error
 
         finally:
-
             browser.close()
 
-    return filename
 
 
 # =========================================================
